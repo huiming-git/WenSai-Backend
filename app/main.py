@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from app.config import CORS_ORIGINS
+from app.config import CORS_ORIGINS, INIT_DB_ON_STARTUP
 from app.database import init_db
 from app.limiter import limiter
 from app.logging_config import setup_logging
@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     setup_logging()
     logger.info("Starting Paper Review API")
-    init_db()
+    if INIT_DB_ON_STARTUP:
+        init_db()
     yield
     logger.info("Shutting down Paper Review API")
 

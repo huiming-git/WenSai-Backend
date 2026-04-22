@@ -4,6 +4,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
@@ -17,6 +25,9 @@ if SECRET_KEY == "dev-secret-key-change-in-production":
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./wensai.db")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "./uploads")
+
+# 自动 create_all 仅对单进程 SQLite 安全；Postgres + 多 worker 会并发建表撞唯一约束，只走 Alembic
+INIT_DB_ON_STARTUP = _env_bool("INIT_DB_ON_STARTUP", DATABASE_URL.startswith("sqlite"))
 
 # LLM Configuration (OpenAI-compatible)
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
