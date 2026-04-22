@@ -123,7 +123,15 @@ alembic upgrade head
 
 ## 部署
 
-生产部署指引见 [AGENT.md](./AGENT.md)。
+最小生产部署（推荐）：
+
+```bash
+cp .env.example .env          # 按需修改 SECRET_KEY / LLM_API_KEY / POSTGRES_PASSWORD
+docker compose up -d --build
+docker compose exec api alembic upgrade head
+```
+
+反向代理配置见 `deploy/nginx.conf`，完整指引见 [AGENT.md](./AGENT.md)。
 
 ## 分支
 

@@ -2,6 +2,13 @@
 
 面向运维 / 部署执行者的操作手册。覆盖 Docker、Docker Compose、裸机（systemd + Nginx）三种方式。默认部署目标为 Linux 服务器。
 
+仓库已内置以下可直接使用的部署文件：
+
+- `Dockerfile` — 应用镜像
+- `docker-compose.yml` — API + PostgreSQL 编排（推荐）
+- `.env.example` — 环境变量模板，`cp .env.example .env` 后修改
+- `deploy/nginx.conf` — Nginx 反向代理示例
+
 ## 0. 部署前检查清单
 
 - [ ] Python 3.12 可用（裸机方式）或已安装 Docker 24+
