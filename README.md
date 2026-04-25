@@ -127,7 +127,24 @@ alembic upgrade head
 
 ```bash
 cp .env.example .env          # 按需修改 SECRET_KEY / LLM_API_KEY / POSTGRES_PASSWORD
-docker compose up -d --build
+docker compose up --build -d
+docker compose exec api alembic upgrade head
+```
+
+生产部署建议：
+
+- 使用 `Nginx + HTTPS + 域名` 对外提供服务，前端不要调用 `localhost` 或 `127.0.0.1`
+- `docker-compose.yml` 中 API 仅绑定 `127.0.0.1:8000:8000`，通过 Nginx 反向代理到 `127.0.0.1:8000`
+- PostgreSQL 和 Redis 不对公网暴露端口，只在 Docker 内部网络中供 `api` / `worker` 使用
+- 上传目录通过 `./uploads:/app/uploads` 持久化，容器重启后文件不会丢失
+- Nginx 已配置 `client_max_body_size 1024m`、`client_body_timeout 300s`、`proxy_read_timeout 300s`、`proxy_send_timeout 300s`
+
+服务器上线步骤：
+
+```bash
+cp .env.example .env
+# 修改 .env 中的 SECRET_KEY、DATABASE_URL、REDIS_URL、CORS_ORIGINS、LLM_API_KEY 等生产参数
+docker compose up --build -d
 docker compose exec api alembic upgrade head
 ```
 
