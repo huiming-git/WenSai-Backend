@@ -26,7 +26,7 @@ if SECRET_KEY == "dev-secret-key-change-in-production":
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./wensai.db")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "./uploads")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "120"))
+MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "1024"))
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Shanghai")
 
 # 自动 create_all 仅对单进程 SQLite 安全；Postgres + 多 worker 会并发建表撞唯一约束，只走 Alembic

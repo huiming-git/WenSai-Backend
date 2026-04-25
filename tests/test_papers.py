@@ -1,4 +1,6 @@
 import io
+from pathlib import Path
+import tempfile
 
 
 class TestCreatePaper:
@@ -106,6 +108,26 @@ class TestUploadFile:
             headers=auth_headers,
         )
         assert resp.status_code == 413
+
+    def test_upload_rejects_large_file_and_cleans_temp_file(self, client, auth_headers, sample_paper, monkeypatch):
+        monkeypatch.setattr("app.routers.papers.MAX_UPLOAD_SIZE_MB", 1)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_named_tempfile = tempfile.NamedTemporaryFile
+
+            def named_tempfile_in_tmpdir(*args, **kwargs):
+                kwargs.setdefault("dir", tmpdir)
+                return original_named_tempfile(*args, **kwargs)
+
+            monkeypatch.setattr("app.routers.papers.tempfile.NamedTemporaryFile", named_tempfile_in_tmpdir)
+            too_large = io.BytesIO(b"a" * (2 * 1024 * 1024))
+            resp = client.post(
+                f"/api/papers/{sample_paper['id']}/upload",
+                files={"file": ("large.pdf", too_large, "application/pdf")},
+                headers=auth_headers,
+            )
+
+            assert resp.status_code == 413
+            assert list(Path(tmpdir).iterdir()) == []
 
     def test_upload_rejects_unsupported_extension(self, client, auth_headers, sample_paper):
         resp = client.post(
