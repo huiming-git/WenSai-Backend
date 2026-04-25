@@ -2,25 +2,29 @@ from unittest.mock import patch
 
 
 class TestAiReview:
-    @patch("app.routers.reviews._run_ai_review")
-    def test_ai_review_returns_pending(self, mock_bg, client, auth_headers, sample_paper):
+    @patch("app.routers.reviews.run_ai_review_task.delay")
+    def test_ai_review_returns_pending(self, mock_delay, client, auth_headers, sample_paper):
         """Endpoint should return a pending review immediately."""
+        mock_delay.return_value.id = "task-123"
         resp = client.post(f"/api/papers/{sample_paper['id']}/ai-review", headers=auth_headers)
         assert resp.status_code == 201
         data = resp.json()
-        assert data["source"] == "ai"
+        assert data["paper_id"] == sample_paper["id"]
+        assert "review_id" in data
+        assert data["task_id"] == "task-123"
         assert data["status"] == "pending"
-        assert data["reviewer_id"] is None
-        mock_bg.assert_called_once()
+        mock_delay.assert_called_once()
 
-    @patch("app.routers.reviews._run_ai_review")
-    def test_ai_review_duplicate(self, mock_bg, client, auth_headers, sample_paper):
+    @patch("app.routers.reviews.run_ai_review_task.delay")
+    def test_ai_review_duplicate(self, mock_delay, client, auth_headers, sample_paper):
+        mock_delay.return_value.id = "task-123"
         client.post(f"/api/papers/{sample_paper['id']}/ai-review", headers=auth_headers)
         resp = client.post(f"/api/papers/{sample_paper['id']}/ai-review", headers=auth_headers)
         assert resp.status_code == 400
 
-    @patch("app.routers.reviews._run_ai_review")
-    def test_ai_review_updates_paper_status(self, mock_bg, client, auth_headers, sample_paper):
+    @patch("app.routers.reviews.run_ai_review_task.delay")
+    def test_ai_review_updates_paper_status(self, mock_delay, client, auth_headers, sample_paper):
+        mock_delay.return_value.id = "task-123"
         client.post(f"/api/papers/{sample_paper['id']}/ai-review", headers=auth_headers)
         resp = client.get(f"/api/papers/{sample_paper['id']}", headers=auth_headers)
         assert resp.json()["status"] == "under_review"
@@ -28,6 +32,19 @@ class TestAiReview:
     def test_ai_review_paper_not_found(self, client, auth_headers):
         resp = client.post("/api/papers/9999/ai-review", headers=auth_headers)
         assert resp.status_code == 404
+
+    @patch("app.routers.reviews.run_ai_review_task.delay")
+    def test_get_review_by_id(self, mock_delay, client, auth_headers, sample_paper):
+        mock_delay.return_value.id = "task-123"
+        create_resp = client.post(f"/api/papers/{sample_paper['id']}/ai-review", headers=auth_headers)
+        review_id = create_resp.json()["review_id"]
+
+        resp = client.get(f"/api/reviews/{review_id}", headers=auth_headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == review_id
+        assert data["status"] == "pending"
+        assert data["score"] is None
 
 
 class TestManualReview:
@@ -57,8 +74,9 @@ class TestManualReview:
 
 
 class TestListReviews:
-    @patch("app.routers.reviews._run_ai_review")
-    def test_list_reviews_mixed(self, mock_bg, client, auth_headers, second_user_headers, sample_paper):
+    @patch("app.routers.reviews.run_ai_review_task.delay")
+    def test_list_reviews_mixed(self, mock_delay, client, auth_headers, second_user_headers, sample_paper):
+        mock_delay.return_value.id = "task-123"
         # Create AI review (pending)
         client.post(f"/api/papers/{sample_paper['id']}/ai-review", headers=auth_headers)
         # Create manual review
@@ -85,10 +103,11 @@ class TestUpdateReview:
         assert resp.status_code == 200
         assert resp.json()["score"] == 8
 
-    @patch("app.routers.reviews._run_ai_review")
-    def test_cannot_update_ai_review(self, mock_bg, client, auth_headers, sample_paper):
+    @patch("app.routers.reviews.run_ai_review_task.delay")
+    def test_cannot_update_ai_review(self, mock_delay, client, auth_headers, sample_paper):
+        mock_delay.return_value.id = "task-123"
         create_resp = client.post(f"/api/papers/{sample_paper['id']}/ai-review", headers=auth_headers)
-        review_id = create_resp.json()["id"]
+        review_id = create_resp.json()["review_id"]
 
         resp = client.put(f"/api/reviews/{review_id}", json={"score": 10}, headers=auth_headers)
         assert resp.status_code == 403
@@ -104,10 +123,11 @@ class TestDeleteReview:
         resp = client.delete(f"/api/reviews/{review_id}", headers=second_user_headers)
         assert resp.status_code == 204
 
-    @patch("app.routers.reviews._run_ai_review")
-    def test_delete_ai_review(self, mock_bg, client, auth_headers, sample_paper):
+    @patch("app.routers.reviews.run_ai_review_task.delay")
+    def test_delete_ai_review(self, mock_delay, client, auth_headers, sample_paper):
+        mock_delay.return_value.id = "task-123"
         create_resp = client.post(f"/api/papers/{sample_paper['id']}/ai-review", headers=auth_headers)
-        review_id = create_resp.json()["id"]
+        review_id = create_resp.json()["review_id"]
 
         resp = client.delete(f"/api/reviews/{review_id}", headers=auth_headers)
         assert resp.status_code == 204

@@ -1,4 +1,5 @@
 import os
+import tempfile
 
 os.environ["RATE_LIMIT_ENABLED"] = "false"
 
@@ -11,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base
 from app.dependencies import get_db
 from app.main import app
+from app.storage import LocalStorage
 
 # In-memory SQLite for tests
 TEST_DATABASE_URL = "sqlite://"
@@ -40,6 +42,16 @@ def setup_db():
     Base.metadata.create_all(bind=engine)
     yield
     Base.metadata.drop_all(bind=engine)
+
+
+@pytest.fixture(autouse=True)
+def isolated_upload_storage(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_storage = LocalStorage(tmpdir)
+        monkeypatch.setattr("app.storage.storage", test_storage)
+        monkeypatch.setattr("app.routers.papers.storage", test_storage)
+        monkeypatch.setattr("app.tasks.review_tasks.storage", test_storage)
+        yield
 
 
 @pytest.fixture

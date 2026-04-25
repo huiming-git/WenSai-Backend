@@ -1,17 +1,15 @@
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session, joinedload
 
-from app.database import SessionLocal
 from app.dependencies import get_db, get_current_user
 from app.limiter import limiter
-from app.storage import storage
 from app.models.paper import Paper
 from app.models.review import Review
 from app.models.user import User
-from app.schemas.review import ReviewCreate, ReviewUpdate, ReviewResponse
-from app.services.agent import review_paper
+from app.schemas.review import AIReviewCreateResponse, ReviewCreate, ReviewUpdate, ReviewResponse
+from app.tasks.review_tasks import run_ai_review_task
 
 logger = logging.getLogger(__name__)
 
@@ -80,41 +78,15 @@ def create_review(
     return review
 
 
-def _run_ai_review(review_id: int, paper_title: str, paper_abstract: str | None, file_path: str | None):
-    """Background task: call LLM and update the review record."""
-    db = SessionLocal()
-    try:
-        result = review_paper(title=paper_title, requirements=paper_abstract, file_path=file_path)
-        review = db.query(Review).filter(Review.id == review_id).first()
-        if not review:
-            return
-        review.score = result["score"]
-        review.content = result["content"]
-        review.recommendation = result["recommendation"]
-        review.llm_log = result.get("llm_log")
-        review.status = "completed"
-        db.commit()
-    except Exception as e:
-        logger.exception("AI review background task failed for review %s", review_id)
-        review = db.query(Review).filter(Review.id == review_id).first()
-        if review:
-            review.status = "failed"
-            review.content = f"AI review failed: {str(e)}"
-            db.commit()
-    finally:
-        db.close()
-
-
-@router.post("/api/papers/{paper_id}/ai-review", response_model=ReviewResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/api/papers/{paper_id}/ai-review", response_model=AIReviewCreateResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/minute")
 def create_ai_review(
     request: Request,
     paper_id: int,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Trigger AI review for a paper. Returns immediately with a pending review."""
+    """Trigger AI review asynchronously and return the queued task metadata."""
     paper = db.query(Paper).filter(Paper.id == paper_id).first()
     if not paper:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paper not found")
@@ -136,9 +108,9 @@ def create_ai_review(
         reviewer_id=None,
         source="ai",
         status="pending",
-        score=0,
-        content="",
-        recommendation="minor_revision",
+        score=None,
+        content=None,
+        recommendation=None,
     )
     db.add(review)
 
@@ -148,19 +120,32 @@ def create_ai_review(
     db.commit()
     db.refresh(review)
 
-    # Schedule the actual LLM call in the background
-    pdf_path = None
-    if paper.file_path:
-        pdf_path = storage.local_path(paper.file_path)
-
-    background_tasks.add_task(
-        _run_ai_review,
+    task_result = run_ai_review_task.delay(
+        paper_id=paper.id,
         review_id=review.id,
-        paper_title=paper.title,
-        paper_abstract=paper.abstract,
-        file_path=pdf_path,
+    )
+    return AIReviewCreateResponse(
+        paper_id=paper.id,
+        review_id=review.id,
+        task_id=task_result.id,
+        status="pending",
     )
 
+
+@router.get("/api/reviews/{review_id}", response_model=ReviewResponse)
+def get_review(
+    review_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    review = (
+        db.query(Review)
+        .options(joinedload(Review.reviewer))
+        .filter(Review.id == review_id)
+        .first()
+    )
+    if not review:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review not found")
     return review
 
 

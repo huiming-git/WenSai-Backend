@@ -1,6 +1,7 @@
 """File storage abstraction – local filesystem or S3-compatible."""
 
 import os
+import shutil
 import uuid
 from abc import ABC, abstractmethod
 
@@ -14,6 +15,10 @@ class StorageBackend(ABC):
     @abstractmethod
     def save(self, data: bytes, filename: str) -> str:
         """Save file and return the storage key."""
+
+    @abstractmethod
+    def save_file(self, file_path: str, filename: str) -> str:
+        """Save a local file and return the storage key."""
 
     @abstractmethod
     def read(self, key: str) -> bytes:
@@ -41,11 +46,19 @@ class LocalStorage(StorageBackend):
         return os.path.join(self._dir, key)
 
     def save(self, data: bytes, filename: str) -> str:
-        ext = os.path.splitext(filename)[1] or ""
-        key = f"{uuid.uuid4().hex}{ext}"
+        key = self._make_key(filename)
         with open(self._full_path(key), "wb") as f:
             f.write(data)
         return key
+
+    def save_file(self, file_path: str, filename: str) -> str:
+        key = self._make_key(filename)
+        shutil.move(file_path, self._full_path(key))
+        return key
+
+    def _make_key(self, filename: str) -> str:
+        ext = os.path.splitext(filename)[1] or ""
+        return f"{uuid.uuid4().hex}{ext}"
 
     def read(self, key: str) -> bytes:
         with open(self._full_path(key), "rb") as f:
@@ -78,10 +91,19 @@ class S3Storage(StorageBackend):
         self._bucket = S3_BUCKET
 
     def save(self, data: bytes, filename: str) -> str:
-        ext = os.path.splitext(filename)[1] or ""
-        key = f"uploads/{uuid.uuid4().hex}{ext}"
+        key = self._make_key(filename)
         self._client.put_object(Bucket=self._bucket, Key=key, Body=data)
         return key
+
+    def save_file(self, file_path: str, filename: str) -> str:
+        key = self._make_key(filename)
+        with open(file_path, "rb") as file_obj:
+            self._client.upload_fileobj(file_obj, self._bucket, key)
+        return key
+
+    def _make_key(self, filename: str) -> str:
+        ext = os.path.splitext(filename)[1] or ""
+        return f"uploads/{uuid.uuid4().hex}{ext}"
 
     def read(self, key: str) -> bytes:
         resp = self._client.get_object(Bucket=self._bucket, Key=key)

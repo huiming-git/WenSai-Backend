@@ -1,3 +1,8 @@
+from jose import jwt
+
+from app.config import ALGORITHM, SECRET_KEY
+
+
 class TestRegister:
     def test_register_success(self, client):
         resp = client.post("/api/auth/register", json={
@@ -32,6 +37,9 @@ class TestLogin:
         resp = client.post("/api/auth/login", json={"username": "testuser", "password": "testpass123"})
         assert resp.status_code == 200
         assert "access_token" in resp.json()
+        token = resp.json()["access_token"]
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        assert "exp" in payload
 
     def test_login_wrong_password(self, client, registered_user):
         resp = client.post("/api/auth/login", json={"username": "testuser", "password": "wrongpass"})
@@ -55,3 +63,14 @@ class TestMe:
     def test_get_me_invalid_token(self, client):
         resp = client.get("/api/auth/me", headers={"Authorization": "Bearer invalidtoken"})
         assert resp.status_code == 401
+
+
+class TestDocsAndHealth:
+    def test_health(self, client):
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+    def test_docs(self, client):
+        resp = client.get("/docs")
+        assert resp.status_code == 200

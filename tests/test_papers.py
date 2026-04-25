@@ -82,3 +82,35 @@ class TestUploadFile:
         )
         assert resp.status_code == 200
         assert resp.json()["file_path"].endswith(".docx")
+
+    def test_upload_download_roundtrip(self, client, auth_headers, sample_paper):
+        pptx_content = b"fake pptx payload"
+        upload_resp = client.post(
+            f"/api/papers/{sample_paper['id']}/upload",
+            files={"file": ("slides.pptx", io.BytesIO(pptx_content), "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
+            headers=auth_headers,
+        )
+        assert upload_resp.status_code == 200
+        assert upload_resp.json()["file_path"].endswith(".pptx")
+
+        download_resp = client.get(f"/api/papers/{sample_paper['id']}/file", headers=auth_headers)
+        assert download_resp.status_code == 200
+        assert download_resp.content == pptx_content
+
+    def test_upload_rejects_large_file(self, client, auth_headers, sample_paper, monkeypatch):
+        monkeypatch.setattr("app.routers.papers.MAX_UPLOAD_SIZE_MB", 1)
+        too_large = io.BytesIO(b"a" * (2 * 1024 * 1024))
+        resp = client.post(
+            f"/api/papers/{sample_paper['id']}/upload",
+            files={"file": ("large.pdf", too_large, "application/pdf")},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 413
+
+    def test_upload_rejects_unsupported_extension(self, client, auth_headers, sample_paper):
+        resp = client.post(
+            f"/api/papers/{sample_paper['id']}/upload",
+            files={"file": ("script.exe", io.BytesIO(b"bad"), "application/octet-stream")},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
