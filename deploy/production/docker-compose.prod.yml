@@ -1,0 +1,110 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wensai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-wensai}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wensai}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ../..
+    restart: unless-stopped
+    env_file:
+      - ./.env.production
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-wensai}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-wensai}
+      REDIS_URL: redis://redis:6379/0
+      AGENTSDK_BASE_URL: http://agentsdk:8010
+      UPLOAD_DIR: /app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      agentsdk:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - backend_uploads:/app/uploads
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://127.0.0.1:8000/api/health\").status==200 else 1)'"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    build:
+      context: ../..
+    restart: unless-stopped
+    command: celery -A app.celery_app.celery_app worker --loglevel=info
+    env_file:
+      - ./.env.production
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-wensai}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-wensai}
+      REDIS_URL: redis://redis:6379/0
+      AGENTSDK_BASE_URL: http://agentsdk:8010
+      UPLOAD_DIR: /app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - backend_uploads:/app/uploads
+
+  agentsdk:
+    build:
+      context: ${AGENTSDK_BUILD_CONTEXT:-../../../WenSai-AgentSDK}
+    restart: unless-stopped
+    env_file:
+      - ./.env.production
+    environment:
+      BACKEND_BASE_URL: http://api:8000
+      AGENTSDK_HOST: 0.0.0.0
+      AGENTSDK_PORT: 8010
+      WORKSPACE_ROOT: /data/agent-workspaces
+      SANDBOX_BACKEND: ${SANDBOX_BACKEND:-cube}
+      CUBE_API_URL: ${CUBE_API_URL:-}
+      CUBE_API_KEY: ${CUBE_API_KEY:-dummy}
+      CUBE_TEMPLATE_ID: ${CUBE_TEMPLATE_ID:-}
+    expose:
+      - "8010"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - agent_workspaces:/data/agent-workspaces
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://127.0.0.1:8010/health\").status==200 else 1)'"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  db_data:
+  redis_data:
+  backend_uploads:
+  agent_workspaces:
