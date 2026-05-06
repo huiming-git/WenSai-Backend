@@ -67,6 +67,20 @@ docker compose exec db pg_isready -U wensai
 AGENTSDK_BASE_URL=http://agentsdk:8010
 ```
 
+## 当前生产沙盒策略
+
+当前生产机使用本地沙盒方案：
+
+```ini
+SANDBOX_BACKEND=local
+LOCAL_SANDBOX_DIRNAME=local-sandbox
+LOCAL_SANDBOX_ENFORCE_PROCESS=false
+```
+
+原因是当前宿主机资源不足以部署官方 CubeSandbox：安装器要求至少 8GB 内存，且 `/data/cubelet` 需要位于 XFS 文件系统；当前机器约 4GB 内存，根文件系统为 ext4。同时 80/443 已由 1Panel OpenResty 占用，CubeProxy 需要另行规划端口或反向代理。
+
+在扩容并准备 XFS 数据目录前，不要把生产环境切换到 `SANDBOX_BACKEND=cube`。本地沙盒可以跑通 Hermes ACP 链路，但隔离级别不是 CubeSandbox MicroVM。
+
 ## 公开 API
 
 Frontend 只访问 Backend：
