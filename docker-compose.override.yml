@@ -1,0 +1,59 @@
+services:
+  api:
+    environment:
+      AGENTSDK_BASE_URL: http://agentsdk:8010
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      DISPATCH_AGENT_TASKS: ${DISPATCH_AGENT_TASKS:-true}
+    depends_on:
+      agentsdk:
+        condition: service_healthy
+
+  worker:
+    environment:
+      AGENTSDK_BASE_URL: http://agentsdk:8010
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      DISPATCH_AGENT_TASKS: ${DISPATCH_AGENT_TASKS:-true}
+    depends_on:
+      agentsdk:
+        condition: service_healthy
+
+  agentsdk:
+    build:
+      context: ../WenSai-AgentSDK
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BACKEND_BASE_URL: http://api:8000
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      AGENTSDK_HOST: 0.0.0.0
+      AGENTSDK_PORT: 8010
+      WORKSPACE_ROOT: /data/agent-workspaces
+      SANDBOX_BACKEND: ${SANDBOX_BACKEND:-local}
+      LOCAL_SANDBOX_DIRNAME: ${LOCAL_SANDBOX_DIRNAME:-local-sandbox}
+      LOCAL_SANDBOX_ENFORCE_PROCESS: ${LOCAL_SANDBOX_ENFORCE_PROCESS:-false}
+      BWRAP_COMMAND: ${BWRAP_COMMAND:-bwrap}
+      DEFAULT_RUNTIME: ${DEFAULT_RUNTIME:-hermes-acp}
+      HERMES_ACP_COMMAND: ${HERMES_ACP_COMMAND:-hermes}
+      HERMES_ACP_ARGS: ${HERMES_ACP_ARGS:-acp}
+      HERMES_ACP_TIMEOUT_SECONDS: ${HERMES_ACP_TIMEOUT_SECONDS:-900}
+      APPROVAL_POLL_SECONDS: ${APPROVAL_POLL_SECONDS:-2}
+      APPROVAL_TIMEOUT_SECONDS: ${APPROVAL_TIMEOUT_SECONDS:-3600}
+      CUBE_API_URL: ${CUBE_API_URL:-}
+      CUBE_API_KEY: ${CUBE_API_KEY:-dummy}
+      CUBE_TEMPLATE_ID: ${CUBE_TEMPLATE_ID:-}
+    expose:
+      - "8010"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - agent_workspaces:/data/agent-workspaces
+      - ${HERMES_HOME:-/root/.hermes}:/root/.hermes
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://127.0.0.1:8010/health\").status==200 else 1)'"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  agent_workspaces:
