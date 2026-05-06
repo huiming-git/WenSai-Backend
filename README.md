@@ -113,7 +113,7 @@ http://127.0.0.1:8000/docs
 | `SOFFICE_COMMAND` | LibreOffice 命令 |
 | `PDF_PREVIEW_DPI` | PDF/Office 转图 DPI |
 
-生产配置样例见仓库根目录 [.env.production.example](../.env.production.example)。
+生产配置请基于 [.env.example](./.env.example) 创建 `.env`。如果使用三仓库统一编排，建议在服务器上层部署目录维护专用 `.env.production`，不要提交真实密钥。
 
 ## 目录结构
 
@@ -203,14 +203,14 @@ pytest tests/test_papers.py tests/test_reviews.py
 
 单 Backend compose 见本目录 [docker-compose.yml](./docker-compose.yml)。
 
-完整生产部署推荐使用仓库根目录：
+完整生产部署推荐在服务器上层部署目录统一编排 `Backend / AgentSDK / PostgreSQL / Redis`。如果只部署 Backend，可使用本目录 compose：
 
 ```bash
-docker compose --env-file .env.production -f docker-compose.prod.yml up --build -d
-docker compose --env-file .env.production -f docker-compose.prod.yml exec api alembic upgrade head
+docker compose up --build -d
+docker compose exec api alembic upgrade head
 ```
 
-生产版官方 CubeSandbox 应安装在宿主机 / 裸机层，AgentSDK 通过 API 调用。完整说明见 [PRODUCTION_DEPLOYMENT.md](../PRODUCTION_DEPLOYMENT.md)。
+生产版官方 CubeSandbox 应安装在宿主机 / 裸机层，AgentSDK 通过 API 调用。不要把 CubeSandbox 宿主机组件放进 Backend 或 AgentSDK 容器。
 
 ## 维护注意
 
