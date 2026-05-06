@@ -5,10 +5,17 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 
 from app.config import DATABASE_URL
-from app.database import Base
+from sqlmodel import SQLModel
 
-# Import all models so Base.metadata is populated
-from app.models import User, Paper, Review  # noqa: F401
+# Import all models so SQLModel.metadata is populated
+from app.approvals.models import TaskApproval  # noqa: F401
+from app.events.models import TaskEvent  # noqa: F401
+from app.files.models import TaskFile  # noqa: F401
+from app.papers.models import Paper  # noqa: F401
+from app.reviews.models import Review  # noqa: F401
+from app.tasks.models import Task  # noqa: F401
+from app.users.models import User  # noqa: F401
+from app.workspaces.models import Workspace  # noqa: F401
 
 config = context.config
 
@@ -18,7 +25,7 @@ config.set_main_option("sqlalchemy.url", DATABASE_URL)
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = Base.metadata
+target_metadata = SQLModel.metadata
 
 
 def run_migrations_offline() -> None:

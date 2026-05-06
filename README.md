@@ -1,110 +1,189 @@
 # WenSai Backend
 
-基于 FastAPI 的论文提交与评审后端服务，支持用户注册登录、论文上传（PDF/PPTX）、人工评审以及 LLM 驱动的 AI 评审。
+WenSai Backend 是问赛的业务控制面。它负责认证、工作区、论文评审、Agent 任务状态、事件、审批、文件归档、文件预览和对 AgentSDK 的 internal dispatch。
 
-## 特性
-
-- JWT 鉴权，注册支持邀请码
-- 论文 CRUD、草稿 / 定稿状态、附件上传与下载
-- 人工评审与 AI 评审（OpenAI 兼容接口）
-- 文件存储支持本地磁盘与 S3（兼容 MinIO）
-- SQLAlchemy + Alembic 数据库迁移（SQLite / PostgreSQL）
-- SlowAPI 限流，CORS，结构化日志
+Backend 不直接运行 Hermes，不直接调用 ACP，不直接运行官方 CubeSandbox。所有 Agent 执行都通过 AgentSDK。
 
 ## 技术栈
 
-Python 3.12 · FastAPI · SQLAlchemy 2 · Alembic · Pydantic v2 · OpenAI SDK · PyPDF2 / python-pptx · boto3 · slowapi · passlib + python-jose
+| 层 | 技术 |
+| --- | --- |
+| API | FastAPI |
+| 数据模型 | SQLModel, SQLAlchemy |
+| 数据库 | PostgreSQL |
+| 迁移 | Alembic |
+| 实时事件 | Redis Pub/Sub, WebSocket |
+| 异步任务 | Celery |
+| 存储 | Local filesystem 或 S3/MinIO |
+| AI Review | OpenAI-compatible API |
+| 测试 | pytest |
 
-## 目录结构
+## 系统位置
 
+```text
+Frontend
+  -> Backend public API /api
+  -> Backend WebSocket /ws
+
+Backend
+  -> PostgreSQL
+  -> Redis
+  -> Storage local/S3
+  -> AgentSDK internal API
+
+AgentSDK
+  -> local-sandbox fallback
+  -> official CubeSandbox API in production target
 ```
-app/
-  main.py            FastAPI 入口、中间件、路由注册
-  config.py          环境变量与配置
-  database.py        SQLAlchemy 引擎与 Session
-  dependencies.py    依赖（当前用户等）
-  limiter.py         SlowAPI 限流器
-  logging_config.py  日志配置
-  storage.py         本地 / S3 存储抽象
-  utils.py           密码哈希、JWT 等工具
-  models/            ORM 模型：user / paper / review
-  schemas/           Pydantic 模型
-  routers/           auth / papers / reviews
-  services/agent.py  LLM 评审服务
-alembic/             数据库迁移
-tests/               pytest 测试
-Dockerfile           容器镜像
-```
 
-## 快速开始
+## 核心职责
 
-### 1. 环境准备
+- 用户认证：注册、登录、JWT、邀请码、积分。
+- 工作区：个人空间、团队空间、成员、当前 active workspace。
+- 论文评审：论文 CRUD、附件上传、人工评审、AI 评审。
+- Agent 任务：创建、启动、取消、删除、状态机。
+- 事件系统：写入 PostgreSQL，再发布 Redis，WebSocket 推送到前端。
+- 审批：Agent 高风险操作申请、用户批准/拒绝、AgentSDK 等待结果。
+- 文件系统：任务文件、工作区文件、预览、下载、真实删除。
+- Internal API：AgentSDK 回写状态、事件、结果、错误、审批和文件。
+
+## 本地开发
+
+前置条件：
+
+- Python 3.12
+- PostgreSQL
+- Redis
+- AgentSDK 可选，默认地址 `http://127.0.0.1:8010`
+
+安装：
 
 ```bash
-python3.12 -m venv venv
-source venv/bin/activate
+python3.12 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
 ```
 
-### 2. 配置 `.env`
-
-在项目根目录创建 `.env`：
-
-```ini
-SECRET_KEY=请替换为强随机字符串
-DATABASE_URL=sqlite:///./wensai.db
-UPLOAD_DIR=./uploads
-INVITE_CODE=huiming
-
-# LLM（OpenAI 兼容）
-LLM_API_KEY=sk-xxx
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_MODEL=gpt-4o
-
-# 存储：local 或 s3
-STORAGE_BACKEND=local
-# S3_BUCKET=
-# S3_ENDPOINT_URL=
-# S3_ACCESS_KEY=
-# S3_SECRET_KEY=
-# S3_REGION=us-east-1
-
-# CORS（逗号分隔）
-CORS_ORIGINS=http://localhost:1420,http://localhost:5173
-```
-
-### 3. 初始化数据库
+配置 `.env` 后执行迁移：
 
 ```bash
 alembic upgrade head
 ```
 
-### 4. 启动开发服务器
+启动 API：
 
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-访问 `http://localhost:8000/docs` 查看 Swagger UI，`http://localhost:8000/api/health` 健康检查。
+健康检查：
 
-## 主要接口
+```bash
+curl http://127.0.0.1:8000/api/health
+```
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| POST | `/api/auth/register` | 注册（需邀请码） |
-| POST | `/api/auth/login` | 登录，返回 JWT |
-| GET | `/api/auth/me` | 当前用户 |
-| GET | `/api/papers` | 论文列表 |
-| POST | `/api/papers` | 创建论文 |
-| GET | `/api/papers/{id}` | 论文详情 |
-| PUT | `/api/papers/{id}` | 更新论文 |
-| DELETE | `/api/papers/{id}` | 删除论文 |
-| POST | `/api/papers/{id}/finalize` | 定稿 |
-| POST | `/api/papers/{id}/upload` | 上传附件 |
-| GET | `/api/papers/{id}/file` | 下载附件 |
-| GET/POST | `/api/papers/{id}/reviews` | 评审列表 / 创建 |
-| POST | `/api/papers/{id}/ai-review` | AI 评审 |
-| PUT/DELETE | `/api/reviews/{id}` | 更新 / 删除评审 |
+API 文档：
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+## 环境变量
+
+| 变量 | 说明 |
+| --- | --- |
+| `SECRET_KEY` | JWT 签名密钥，生产必须强随机 |
+| `DATABASE_URL` | PostgreSQL 连接串 |
+| `REDIS_URL` | Redis 连接串 |
+| `UPLOAD_DIR` | local storage 目录 |
+| `MAX_UPLOAD_SIZE_MB` | 上传大小限制 |
+| `INVITE_CODE` | 注册邀请码 |
+| `LLM_API_KEY` | OpenAI-compatible key |
+| `LLM_BASE_URL` | OpenAI-compatible base URL |
+| `LLM_MODEL` | AI 评审模型 |
+| `STORAGE_BACKEND` | `local` 或 `s3` |
+| `S3_*` | S3/MinIO 配置 |
+| `CORS_ORIGINS` | 允许的前端域名 |
+| `AGENTSDK_BASE_URL` | AgentSDK internal API 地址 |
+| `INTERNAL_API_TOKEN` | Backend 与 AgentSDK 共享的服务间 token |
+| `DISPATCH_AGENT_TASKS` | 是否派发 Agent 任务 |
+| `LOCAL_WORKSPACE_ROOT` | 本地空间 root path fallback |
+| `PREVIEW_CACHE_DIR` | PDF/Office 页图缓存目录 |
+| `SOFFICE_COMMAND` | LibreOffice 命令 |
+| `PDF_PREVIEW_DPI` | PDF/Office 转图 DPI |
+
+生产配置样例见仓库根目录 [.env.production.example](../.env.production.example)。
+
+## 目录结构
+
+```text
+app/
+  main.py             FastAPI 入口、路由注册、启动重派发
+  config.py           环境变量
+  database.py         SQLAlchemy engine/session
+  storage.py          local/S3 存储抽象
+  auth/               注册、登录、JWT、积分
+  users/              用户模型和 schema
+  workspaces/         工作区、成员、active workspace
+  papers/             论文和附件
+  reviews/            人工/AI 评审
+  tasks/              Agent task public API、dispatcher、状态服务
+  events/             任务事件模型和 EventService
+  approvals/          用户审批 API
+  files/              任务文件、工作区文件、预览和真实删除
+  internal_api/       AgentSDK 回写 API
+  realtime/           WebSocket 推送
+  agent_profiles/     Agent profile API
+alembic/              数据库迁移
+tests/                pytest 测试
+```
+
+## API 分组
+
+| 分组 | 路径 |
+| --- | --- |
+| Auth | `/api/auth/*` |
+| Workspaces | `/api/workspaces/*` |
+| Papers | `/api/papers/*` |
+| Reviews | `/api/papers/{id}/reviews`, `/api/reviews/*` |
+| Tasks | `/api/tasks/*` |
+| Approvals | `/api/approvals/*`, `/api/tasks/{id}/approvals/*` |
+| Files | `/api/tasks/{id}/files`, `/api/workspaces/{id}/files`, `/api/files/*` |
+| Internal | `/api/internal/*` |
+| WebSocket | `/ws/tasks/{task_id}/events` |
+
+## Agent 任务链路
+
+1. Frontend 创建任务：`POST /api/tasks`。
+2. Backend 创建 `Task`，状态进入 `queued`。
+3. Backend 调 AgentSDK：`POST /internal/agent-runs`，只发送 `task_id`。
+4. AgentSDK 通过 Backend internal API 读取任务详情。
+5. AgentSDK 运行 runtime，向 Backend 回写事件、审批、文件和结果。
+6. Backend 写数据库、发布 Redis，WebSocket 推送给 Frontend。
+
+Backend 启动时会重新派发未开始的 queued tasks，避免 AgentSDK 暂时离线造成任务卡住。
+
+## 文件与沙盒链路
+
+- Backend 保存文件记录和 storage object。
+- 上传/新建任务文件后，Backend 会把文件转发到 AgentSDK sandbox input。
+- 删除文件时，Backend 必须删除 storage 记录和 AgentSDK sandbox 内真实文件。
+- 删除任务/沙盒时，Backend 会请求 AgentSDK cleanup 对应 sandbox。
+- PDF/Office 预览页图由 Backend 生成并缓存，Frontend 可再同步到 IndexedDB。
+
+## 数据库迁移
+
+```bash
+alembic revision --autogenerate -m "describe change"
+alembic upgrade head
+```
+
+生产每次发布后都要执行：
+
+```bash
+alembic upgrade head
+```
 
 ## 测试
 
@@ -112,45 +191,31 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 pytest
 ```
 
-## 数据库迁移
+建议按改动范围运行：
 
 ```bash
-# 根据模型变更生成迁移
-alembic revision --autogenerate -m "描述"
-# 应用迁移
-alembic upgrade head
+pytest tests/test_auth.py
+pytest tests/test_tasks_platform.py tests/test_workspaces.py
+pytest tests/test_papers.py tests/test_reviews.py
 ```
 
 ## 部署
 
-最小生产部署（推荐）：
+单 Backend compose 见本目录 [docker-compose.yml](./docker-compose.yml)。
+
+完整生产部署推荐使用仓库根目录：
 
 ```bash
-cp .env.example .env          # 按需修改 SECRET_KEY / LLM_API_KEY / POSTGRES_PASSWORD
-docker compose up --build -d
-docker compose exec api alembic upgrade head
+docker compose --env-file .env.production -f docker-compose.prod.yml up --build -d
+docker compose --env-file .env.production -f docker-compose.prod.yml exec api alembic upgrade head
 ```
 
-生产部署建议：
+生产版官方 CubeSandbox 应安装在宿主机 / 裸机层，AgentSDK 通过 API 调用。完整说明见 [PRODUCTION_DEPLOYMENT.md](../PRODUCTION_DEPLOYMENT.md)。
 
-- 使用 `Nginx + HTTPS + 域名` 对外提供服务，前端不要调用 `localhost` 或 `127.0.0.1`
-- `docker-compose.yml` 中 API 仅绑定 `127.0.0.1:8000:8000`，通过 Nginx 反向代理到 `127.0.0.1:8000`
-- PostgreSQL 和 Redis 不对公网暴露端口，只在 Docker 内部网络中供 `api` / `worker` 使用
-- 上传目录通过 `./uploads:/app/uploads` 持久化，容器重启后文件不会丢失
-- Nginx 已配置 `client_max_body_size 1024m`、`client_body_timeout 300s`、`proxy_read_timeout 300s`、`proxy_send_timeout 300s`
+## 维护注意
 
-服务器上线步骤：
-
-```bash
-cp .env.example .env
-# 修改 .env 中的 SECRET_KEY、DATABASE_URL、REDIS_URL、CORS_ORIGINS、LLM_API_KEY 等生产参数
-docker compose up --build -d
-docker compose exec api alembic upgrade head
-```
-
-反向代理配置见 `deploy/nginx.conf`，完整指引见 [AGENT.md](./AGENT.md)。
-
-## 分支
-
-- `dev`：开发分支
-- `release`：发布分支
+- Backend 是权限和数据一致性的最终裁决点。
+- Internal API 必须校验 `X-Internal-Token`。
+- 事件必须先落 PostgreSQL，再 publish Redis。
+- 文件删除必须是真删除，不能只删除数据库记录。
+- Frontend 不应知道 AgentSDK 或 CubeSandbox 地址。

@@ -13,6 +13,7 @@ class TestRegister:
         assert resp.status_code == 201
         data = resp.json()
         assert data["username"] == "newuser"
+        assert data["credits"] == 0
         assert "id" in data
 
     def test_register_wrong_invite_code(self, client):
@@ -55,6 +56,7 @@ class TestMe:
         resp = client.get("/api/auth/me", headers=auth_headers)
         assert resp.status_code == 200
         assert resp.json()["username"] == "testuser"
+        assert resp.json()["credits"] == 0
 
     def test_get_me_no_token(self, client):
         resp = client.get("/api/auth/me")
@@ -63,6 +65,38 @@ class TestMe:
     def test_get_me_invalid_token(self, client):
         resp = client.get("/api/auth/me", headers={"Authorization": "Bearer invalidtoken"})
         assert resp.status_code == 401
+
+
+class TestCredits:
+    def test_get_credits_success(self, client, auth_headers):
+        resp = client.get("/api/auth/credits", headers=auth_headers)
+        assert resp.status_code == 200
+        assert resp.json() == {"credits": 0}
+
+    def test_huiming_can_redeem_any_code_repeatedly(self, client):
+        register_resp = client.post("/api/auth/register", json={
+            "username": "huiming",
+            "password": "testpass123",
+            "invite_code": "huiming",
+        })
+        assert register_resp.status_code == 201
+
+        login_resp = client.post("/api/auth/login", json={"username": "huiming", "password": "testpass123"})
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        first_resp = client.post("/api/auth/redeem-code", json={"code": "dev-card"}, headers=headers)
+        assert first_resp.status_code == 200
+        assert first_resp.json()["added"] == 1000
+        assert first_resp.json()["credits"] == 1000
+
+        second_resp = client.post("/api/auth/redeem-code", json={"code": "dev-card"}, headers=headers)
+        assert second_resp.status_code == 200
+        assert second_resp.json()["credits"] == 2000
+
+    def test_redeem_requires_code(self, client, auth_headers):
+        resp = client.post("/api/auth/redeem-code", json={"code": "  "}, headers=auth_headers)
+        assert resp.status_code == 400
 
 
 class TestDocsAndHealth:

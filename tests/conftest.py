@@ -2,26 +2,24 @@ import os
 import tempfile
 
 os.environ["RATE_LIMIT_ENABLED"] = "false"
+os.environ.setdefault(
+    "DATABASE_URL",
+    "postgresql+psycopg2://wensai:change-me@localhost:5432/wensai_test",
+)
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlmodel import SQLModel
 
-from app.database import Base
 from app.dependencies import get_db
 from app.main import app
 from app.storage import LocalStorage
 
-# In-memory SQLite for tests
-TEST_DATABASE_URL = "sqlite://"
+TEST_DATABASE_URL = os.environ["DATABASE_URL"]
 
-engine = create_engine(
-    TEST_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
+engine = create_engine(TEST_DATABASE_URL)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -38,10 +36,11 @@ app.dependency_overrides[get_db] = override_get_db
 
 @pytest.fixture(autouse=True)
 def setup_db():
-    """Create tables before each test, drop after."""
-    Base.metadata.create_all(bind=engine)
+    """Create PostgreSQL tables before each test, drop after."""
+    SQLModel.metadata.drop_all(bind=engine)
+    SQLModel.metadata.create_all(bind=engine)
     yield
-    Base.metadata.drop_all(bind=engine)
+    SQLModel.metadata.drop_all(bind=engine)
 
 
 @pytest.fixture(autouse=True)
@@ -49,8 +48,11 @@ def isolated_upload_storage(monkeypatch):
     with tempfile.TemporaryDirectory() as tmpdir:
         test_storage = LocalStorage(tmpdir)
         monkeypatch.setattr("app.storage.storage", test_storage)
-        monkeypatch.setattr("app.routers.papers.storage", test_storage)
-        monkeypatch.setattr("app.tasks.review_tasks.storage", test_storage)
+        monkeypatch.setattr("app.files.router.storage", test_storage)
+        monkeypatch.setattr("app.internal_api.router.storage", test_storage)
+        monkeypatch.setattr("app.papers.router.storage", test_storage)
+        monkeypatch.setattr("app.reviews.jobs.storage", test_storage)
+        monkeypatch.setattr("app.tasks.router.storage", test_storage)
         yield
 
 

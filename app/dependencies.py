@@ -5,8 +5,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
-from app.models.user import User
+from app.users.models import User
 from app.utils import decode_access_token
+from app.workspaces.service import ensure_active_workspace
 
 security = HTTPBearer()
 
@@ -44,4 +45,5 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
         )
+    ensure_active_workspace(db, user)
     return user

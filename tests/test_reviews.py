@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 
 class TestAiReview:
-    @patch("app.routers.reviews.run_ai_review_task.delay")
+    @patch("app.reviews.router.run_ai_review_task.delay")
     def test_ai_review_returns_pending(self, mock_delay, client, auth_headers, sample_paper):
         """Endpoint should return a pending review immediately."""
         mock_delay.return_value.id = "task-123"
@@ -15,14 +15,14 @@ class TestAiReview:
         assert data["status"] == "pending"
         mock_delay.assert_called_once()
 
-    @patch("app.routers.reviews.run_ai_review_task.delay")
+    @patch("app.reviews.router.run_ai_review_task.delay")
     def test_ai_review_duplicate(self, mock_delay, client, auth_headers, sample_paper):
         mock_delay.return_value.id = "task-123"
         client.post(f"/api/papers/{sample_paper['id']}/ai-review", headers=auth_headers)
         resp = client.post(f"/api/papers/{sample_paper['id']}/ai-review", headers=auth_headers)
         assert resp.status_code == 400
 
-    @patch("app.routers.reviews.run_ai_review_task.delay")
+    @patch("app.reviews.router.run_ai_review_task.delay")
     def test_ai_review_updates_paper_status(self, mock_delay, client, auth_headers, sample_paper):
         mock_delay.return_value.id = "task-123"
         client.post(f"/api/papers/{sample_paper['id']}/ai-review", headers=auth_headers)
@@ -33,7 +33,7 @@ class TestAiReview:
         resp = client.post("/api/papers/9999/ai-review", headers=auth_headers)
         assert resp.status_code == 404
 
-    @patch("app.routers.reviews.run_ai_review_task.delay")
+    @patch("app.reviews.router.run_ai_review_task.delay")
     def test_get_review_by_id(self, mock_delay, client, auth_headers, sample_paper):
         mock_delay.return_value.id = "task-123"
         create_resp = client.post(f"/api/papers/{sample_paper['id']}/ai-review", headers=auth_headers)
@@ -74,7 +74,7 @@ class TestManualReview:
 
 
 class TestListReviews:
-    @patch("app.routers.reviews.run_ai_review_task.delay")
+    @patch("app.reviews.router.run_ai_review_task.delay")
     def test_list_reviews_mixed(self, mock_delay, client, auth_headers, second_user_headers, sample_paper):
         mock_delay.return_value.id = "task-123"
         # Create AI review (pending)
@@ -103,7 +103,7 @@ class TestUpdateReview:
         assert resp.status_code == 200
         assert resp.json()["score"] == 8
 
-    @patch("app.routers.reviews.run_ai_review_task.delay")
+    @patch("app.reviews.router.run_ai_review_task.delay")
     def test_cannot_update_ai_review(self, mock_delay, client, auth_headers, sample_paper):
         mock_delay.return_value.id = "task-123"
         create_resp = client.post(f"/api/papers/{sample_paper['id']}/ai-review", headers=auth_headers)
@@ -123,7 +123,7 @@ class TestDeleteReview:
         resp = client.delete(f"/api/reviews/{review_id}", headers=second_user_headers)
         assert resp.status_code == 204
 
-    @patch("app.routers.reviews.run_ai_review_task.delay")
+    @patch("app.reviews.router.run_ai_review_task.delay")
     def test_delete_ai_review(self, mock_delay, client, auth_headers, sample_paper):
         mock_delay.return_value.id = "task-123"
         create_resp = client.post(f"/api/papers/{sample_paper['id']}/ai-review", headers=auth_headers)

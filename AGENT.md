@@ -1,309 +1,218 @@
-# 部署指引（AGENT.md）
+# WenSai Backend Agent Guide
 
-面向运维 / 部署执行者的操作手册。覆盖 Docker、Docker Compose、裸机（systemd + Nginx）三种方式。默认部署目标为 Linux 服务器。
+本文面向维护 Backend 的代码 Agent。Backend 是问赛的数据、权限和事件控制面，改动时优先保证一致性和安全边界。
 
-仓库已内置以下可直接使用的部署文件：
+## 职责边界
 
-- `Dockerfile` — 应用镜像
-- `docker-compose.yml` — API + PostgreSQL 编排（推荐）
-- `.env.example` — 环境变量模板，`cp .env.example .env` 后修改
-- `deploy/nginx.conf` — Nginx 反向代理示例
+Backend 负责：
 
-## 0. 部署前检查清单
+- 认证、用户、积分、工作区。
+- 论文、评审和 AI review。
+- Agent task 状态机、事件、审批和文件记录。
+- WebSocket 事件推送。
+- 文件存储、下载、预览和真实删除。
+- 调用 AgentSDK internal API。
 
-- [ ] Python 3.12 可用（裸机方式）或已安装 Docker 24+
-- [ ] 已准备生产 `SECRET_KEY`（建议 `openssl rand -hex 32`）
-- [ ] 已准备 LLM API Key（若启用 AI 评审）
-- [ ] 数据库：生产推荐 PostgreSQL 14+
-- [ ] 反向代理：Nginx / Caddy，已配置 HTTPS（Let's Encrypt）
-- [ ] 已开放 80 / 443 端口；应用监听端口（8000）仅对本机/内网可达
-- [ ] 备份策略：数据库 + `uploads/` 目录（或 S3）
+Backend 不负责：
 
-## 1. 环境变量
+- 运行 Hermes。
+- 消费 Hermes ACP 原始事件。
+- 直接操作官方 CubeSandbox。
+- 向 Frontend 暴露 AgentSDK 地址或 internal token。
 
-生产环境变量写入 `.env`（同目录）或通过容器编排注入。关键项：
+## 不变量
 
-| 变量 | 说明 | 生产建议 |
-| --- | --- | --- |
-| `SECRET_KEY` | JWT 签名密钥 | **必填**，强随机 32+ 字节 |
-| `DATABASE_URL` | 数据库连接串 | `postgresql+psycopg2://user:pwd@host:5432/wensai` |
-| `UPLOAD_DIR` | 本地上传目录 | `/var/lib/wensai/uploads`（本地存储时） |
-| `INVITE_CODE` | 注册邀请码 | 自定义 |
-| `LLM_API_KEY` | OpenAI 兼容 Key | 保密 |
-| `LLM_BASE_URL` | LLM 端点 | 默认 `https://api.openai.com/v1` |
-| `LLM_MODEL` | 模型 | 如 `gpt-4o` |
-| `STORAGE_BACKEND` | `local` / `s3` | 多实例部署必须用 `s3` |
-| `S3_BUCKET` / `S3_ENDPOINT_URL` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_REGION` | S3 配置 | MinIO 需设 `S3_ENDPOINT_URL` |
-| `CORS_ORIGINS` | 前端域名，逗号分隔 | 精确到线上域名 |
+- Frontend 只能访问 Backend public API。
+- Backend 调 AgentSDK 时只通过 internal API，并携带 `X-Internal-Token`。
+- AgentSDK 通过 `/api/internal/*` 回写状态、事件、结果、错误、审批和文件。
+- 所有 task events 必须先写 PostgreSQL，再 publish Redis。
+- 文件删除必须同时处理 Backend storage/DB 和 AgentSDK sandbox 文件。
+- 工作区权限必须通过 owner 或 `WorkspaceMember` 校验。
+- `INTERNAL_API_TOKEN` 只能存在服务端配置中，不能进入前端响应。
 
-注意：`SECRET_KEY` 为默认值时启动会打印警告，务必更换。
+## 关键文件
 
-## 2. Docker 部署
-
-### 2.1 构建镜像
-
-```bash
-docker build -t wensai-backend:latest .
-```
-
-### 2.2 单容器 + SQLite（仅用于演示 / 小规模）
-
-```bash
-docker run -d \
-  --name wensai-backend \
-  --restart unless-stopped \
-  -p 127.0.0.1:8000:8000 \
-  --env-file .env \
-  -v /var/lib/wensai/uploads:/app/uploads \
-  -v /var/lib/wensai/db:/app/db \
-  -e DATABASE_URL=sqlite:////app/db/wensai.db \
-  wensai-backend:latest
-```
-
-首次启动后进入容器执行迁移：
-
-```bash
-docker exec -it wensai-backend alembic upgrade head
-```
-
-### 2.3 Docker Compose + PostgreSQL（推荐）
-
-在项目根目录新建 `docker-compose.yml`：
-
-```yaml
-services:
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: wensai
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: wensai
-    volumes:
-      - db_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U wensai"]
-      interval: 5s
-      retries: 10
-
-  api:
-    build: .
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql+psycopg2://wensai:${POSTGRES_PASSWORD}@db:5432/wensai
-    depends_on:
-      db:
-        condition: service_healthy
-    ports:
-      - "127.0.0.1:8000:8000"
-    volumes:
-      - uploads:/app/uploads
-
-volumes:
-  db_data:
-  uploads:
-```
-
-启动：
-
-```bash
-docker compose up -d --build
-docker compose exec api alembic upgrade head
-```
-
-升级：
-
-```bash
-git pull
-docker compose build api
-docker compose up -d api
-docker compose exec api alembic upgrade head
-```
-
-## 3. 裸机部署（systemd + Gunicorn + Nginx）
-
-### 3.1 安装
-
-```bash
-sudo useradd -r -m -d /var/lib/wensai -s /usr/sbin/nologin wensai
-sudo mkdir -p /opt/wensai && sudo chown wensai:wensai /opt/wensai
-sudo -u wensai git clone -b release https://github.com/huiming-git/WenSai-Backend.git /opt/wensai/app
-cd /opt/wensai/app
-sudo -u wensai python3.12 -m venv venv
-sudo -u wensai ./venv/bin/pip install -r requirements.txt gunicorn
-sudo -u wensai cp /path/to/prod.env .env
-sudo -u wensai ./venv/bin/alembic upgrade head
-```
-
-### 3.2 systemd 服务
-
-`/etc/systemd/system/wensai.service`：
-
-```ini
-[Unit]
-Description=WenSai Backend
-After=network.target postgresql.service
-
-[Service]
-Type=simple
-User=wensai
-Group=wensai
-WorkingDirectory=/opt/wensai/app
-EnvironmentFile=/opt/wensai/app/.env
-ExecStart=/opt/wensai/app/venv/bin/gunicorn app.main:app \
-  -w 4 -k uvicorn.workers.UvicornWorker \
-  -b 127.0.0.1:8000 \
-  --access-logfile - --error-logfile -
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-
-启用：
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now wensai
-sudo systemctl status wensai
-```
-
-### 3.3 Nginx 反向代理
-
-`/etc/nginx/sites-available/wensai`：
-
-```nginx
-server {
-  listen 80;
-  server_name api.example.com;
-  return 301 https://$host$request_uri;
-}
-
-server {
-  listen 443 ssl http2;
-  server_name api.example.com;
-
-  ssl_certificate     /etc/letsencrypt/live/api.example.com/fullchain.pem;
-  ssl_certificate_key /etc/letsencrypt/live/api.example.com/privkey.pem;
-
-  client_max_body_size 50m;
-
-  location / {
-    proxy_pass         http://127.0.0.1:8000;
-    proxy_http_version 1.1;
-    proxy_set_header   Host              $host;
-    proxy_set_header   X-Real-IP         $remote_addr;
-    proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
-    proxy_set_header   X-Forwarded-Proto $scheme;
-    proxy_read_timeout 120s;
-  }
-}
-```
-
-启用并申请证书：
-
-```bash
-sudo ln -s /etc/nginx/sites-available/wensai /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d api.example.com
-```
-
-## 4. 数据库迁移
-
-首次部署或版本更新后：
-
-```bash
-# Docker Compose
-docker compose exec api alembic upgrade head
-
-# 裸机
-sudo -u wensai /opt/wensai/app/venv/bin/alembic upgrade head
-```
-
-回滚一个版本：
-
-```bash
-alembic downgrade -1
-```
-
-## 5. 备份
-
-### 数据库（PostgreSQL）
-
-```bash
-pg_dump -U wensai -Fc wensai > /backup/wensai-$(date +%F).dump
-```
-
-建议通过 cron 每日执行并异地同步。
-
-### 上传文件
-
-- 本地存储：对 `uploads/` 使用 `rsync` / `restic` 异地备份
-- S3：启用桶的版本控制与跨区域复制
-
-## 6. 监控 / 日志
-
-- 健康检查：`GET /api/health`，返回 `{"status":"ok"}`；接入 Uptime 监控
-- 应用日志：应用输出 stdout/stderr，Docker 由编排收集；裸机通过 `journalctl -u wensai -f`
-- 限流：注册 5/min，登录 10/min，AI 评审 5/min（见 `app/routers/*.py`）
-
-## 7. 升级流程
-
-```bash
-# 1. 备份数据库与 uploads
-# 2. 拉取最新 release 分支
-git -C /opt/wensai/app fetch origin
-git -C /opt/wensai/app checkout release
-git -C /opt/wensai/app pull
-# 3. 更新依赖（若 requirements.txt 变化）
-sudo -u wensai /opt/wensai/app/venv/bin/pip install -r /opt/wensai/app/requirements.txt
-# 4. 应用迁移
-sudo -u wensai /opt/wensai/app/venv/bin/alembic upgrade head
-# 5. 重启
-sudo systemctl restart wensai
-# 6. 验证 /api/health
-curl -fsS http://127.0.0.1:8000/api/health
-```
-
-Docker Compose 版本：
-
-```bash
-git pull
-docker compose build api
-docker compose up -d api
-docker compose exec api alembic upgrade head
-```
-
-## 8. 安全建议
-
-- 关闭 Swagger / ReDoc 面向公网（如需要，前置鉴权或仅内网开放）
-- `SECRET_KEY`、LLM Key、数据库密码不得入库
-- 定期轮换 JWT `SECRET_KEY`（会使所有历史 token 失效）
-- 数据库账号使用最小权限
-- Nginx 开启 HTTPS、HSTS；限制 `client_max_body_size` 与单 IP 连接数
-- 文件上传后端已校验大小与类型，但仍建议在代理层再加一道限流
-
-## 9. 故障排查
-
-| 现象 | 排查 |
+| 路径 | 说明 |
 | --- | --- |
-| 启动日志警告 `SECRET_KEY is using the default value` | 未设置生产 `SECRET_KEY` |
-| 上传文件 413 | 调大 Nginx `client_max_body_size` |
-| AI 评审报错 401 / 429 | 检查 `LLM_API_KEY`、配额、`LLM_BASE_URL` |
-| CORS 拒绝 | 将前端域名加入 `CORS_ORIGINS` |
-| 多实例下附件丢失 | 切换至 `STORAGE_BACKEND=s3` |
-| Alembic `target database is not up to date` | 执行 `alembic upgrade head` |
+| `app/main.py` | FastAPI 初始化、CORS、路由注册、启动重派发 queued tasks |
+| `app/config.py` | 环境变量 |
+| `app/database.py` | DB engine/session |
+| `app/storage.py` | local/S3 存储抽象 |
+| `app/tasks/router.py` | task public API |
+| `app/tasks/service.py` | task 状态变更和 response |
+| `app/tasks/dispatcher.py` | 调 AgentSDK、转发/删除沙盒文件 |
+| `app/internal_api/router.py` | AgentSDK 回写接口 |
+| `app/events/service.py` | 事件写库和 Redis publish |
+| `app/realtime/router.py` | WebSocket |
+| `app/files/router.py` | 文件上传、新建、预览、下载、删除 |
+| `app/workspaces/service.py` | 工作区创建、active workspace、root path |
+| `alembic/versions/` | DB migrations |
+| `tests/` | pytest |
 
-## 10. 回滚
+## Agent 任务状态
 
-```bash
-# 裸机
-git -C /opt/wensai/app checkout <上一个可用 tag 或 commit>
-sudo -u wensai /opt/wensai/app/venv/bin/pip install -r requirements.txt
-sudo -u wensai /opt/wensai/app/venv/bin/alembic downgrade <目标 revision>
-sudo systemctl restart wensai
+常见状态：
+
+```text
+pending -> queued -> running -> waiting_approval -> running -> completed
+                                  |                 -> failed
+                                  -> cancelled
 ```
 
-> 回滚数据库前务必确认迁移可逆，必要时从备份还原。
+注意：
+
+- `POST /api/tasks` 创建任务并派发。
+- `POST /api/tasks/{task_id}/start` 用于 pending upload 流程。
+- Backend 启动时 `redispatch_queued_tasks` 会重派发未 started 的 queued tasks。
+- `cancel` 当前只更新 Backend 状态并调用 AgentSDK cancel endpoint；具体 runtime 取消能力在 AgentSDK。
+
+## 文件规则
+
+上传/新建：
+
+```text
+Frontend -> Backend storage + TaskFile DB -> AgentSDK /sandbox/files
+```
+
+删除：
+
+```text
+Frontend -> Backend /api/files/{id}
+  -> AgentSDK DELETE /sandbox/files
+  -> Backend storage delete
+  -> Backend DB delete
+```
+
+删除任务：
+
+```text
+Backend delete Task
+  -> AgentSDK DELETE /sandbox
+  -> storage / DB cleanup
+```
+
+不要只删前端、只删 DB，或只删 storage。
+
+## Internal API
+
+所有 `/api/internal/*` 必须依赖 `require_internal_token`。
+
+主要接口：
+
+- `GET /api/internal/tasks/{task_id}`
+- `POST /api/internal/tasks/{task_id}/status`
+- `POST /api/internal/tasks/{task_id}/events`
+- `POST /api/internal/tasks/{task_id}/result`
+- `POST /api/internal/tasks/{task_id}/error`
+- `POST /api/internal/tasks/{task_id}/approvals`
+- `GET /api/internal/approvals/{approval_id}`
+- `GET /api/internal/approvals/{approval_id}/wait`
+- `POST /api/internal/tasks/{task_id}/files`
+
+新增 internal endpoint 时必须：
+
+- 使用 internal token。
+- 避免返回用户 JWT、internal token、LLM key。
+- 写测试覆盖未授权访问。
+
+## 事件规则
+
+事件来源统一进入 `EventService`。不要让 router 直接绕过事件服务写 Redis。
+
+事件应包含：
+
+- `task_id`
+- `type`
+- `content`
+- `metadata`
+- `created_at`
+
+WebSocket 只推送 Backend 已落库事件。Frontend 会按 `event.id` 去重。
+
+## 预览规则
+
+`app/files/router.py` 负责：
+
+- 文本/图片直接预览。
+- PDF 预览。
+- Office 通过 LibreOffice 转 PDF/图片。
+- OpenXML 文本提取。
+- 页图缓存到 `PREVIEW_CACHE_DIR`。
+
+涉及预览时注意：
+
+- 不要信任用户文件名，所有路径必须 safe normalize。
+- 生成文件放入临时目录或 preview cache。
+- 大文件和长文本要截断显示。
+- 修改 preview 输出 schema 时同步前端 `FilePreview` 类型。
+
+## 数据库和迁移
+
+改 SQLModel model 后通常需要 Alembic migration：
+
+```bash
+alembic revision --autogenerate -m "describe change"
+alembic upgrade head
+```
+
+迁移要检查：
+
+- 外键名是否稳定。
+- nullable/default 是否兼容已有数据。
+- 删除字段是否需要数据迁移。
+
+## 本地运行
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+alembic upgrade head
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+## 验证
+
+常规：
+
+```bash
+pytest
+```
+
+按范围：
+
+```bash
+pytest tests/test_auth.py
+pytest tests/test_tasks_platform.py tests/test_workspaces.py
+pytest tests/test_papers.py tests/test_reviews.py
+```
+
+涉及迁移时：
+
+```bash
+alembic upgrade head
+```
+
+涉及生产 compose 时，在有 Docker 的环境执行：
+
+```bash
+docker compose --env-file ../.env.production -f ../docker-compose.prod.yml config
+```
+
+## 安全要求
+
+- 不要把 `SECRET_KEY`、`INTERNAL_API_TOKEN`、`LLM_API_KEY` 写入日志或响应。
+- PostgreSQL、Redis、AgentSDK 不对公网开放。
+- 生产 CORS 必须是精确域名。
+- WebSocket URL 带 JWT，生产访问日志不要记录完整 query token。
+- 文件路径必须防止 `..`、绝对路径和反斜杠绕过。
+- 审批是高风险操作的边界，不能默认 allow。
+
+## 禁止事项
+
+- 不要在 Backend 中引入 Hermes ACP client。
+- 不要让 Backend 直接调用官方 CubeSandbox。
+- 不要让 Frontend 看到 AgentSDK base URL。
+- 不要用 mock/fake runtime 伪造任务成功。
+- 不要把文件删除改成只删 UI 或只删数据库。

@@ -14,8 +14,6 @@ __pycache__
 venv
 .venv
 env
-*.db
-*.sqlite3
 uploads
 !uploads/.gitkeep
 tests/__pycache__

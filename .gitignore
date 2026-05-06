@@ -14,10 +14,6 @@ venv/
 env/
 .venv/
 
-# Database
-*.db
-*.sqlite3
-
 # Environment variables
 .env
 .env.*
@@ -48,3 +44,6 @@ logs/
 
 # Alembic
 alembic/versions/__pycache__/
+
+# Preview cache
+.preview-cache/

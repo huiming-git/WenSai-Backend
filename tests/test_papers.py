@@ -64,10 +64,27 @@ class TestDeletePaper:
         resp = client.delete(f"/api/papers/{sample_paper['id']}", headers=second_user_headers)
         assert resp.status_code == 403
 
+    def test_delete_paper_deletes_uploaded_file(self, client, auth_headers, sample_paper):
+        upload_resp = client.post(
+            f"/api/papers/{sample_paper['id']}/upload",
+            files={"file": ("paper.pdf", io.BytesIO(b"paper"), "application/pdf")},
+            headers=auth_headers,
+        )
+        assert upload_resp.status_code == 200
+        file_path = upload_resp.json()["file_path"]
+        from app.papers.router import storage
+
+        assert storage.exists(file_path)
+
+        resp = client.delete(f"/api/papers/{sample_paper['id']}", headers=auth_headers)
+
+        assert resp.status_code == 204
+        assert not storage.exists(file_path)
+
 
 class TestUploadFile:
     def test_upload_pdf(self, client, auth_headers, sample_paper):
-        pdf_content = b"%PDF-1.4 fake pdf content"
+        pdf_content = b"%PDF-1.4 sample pdf content"
         resp = client.post(
             f"/api/papers/{sample_paper['id']}/upload",
             files={"file": ("test.pdf", io.BytesIO(pdf_content), "application/pdf")},
@@ -79,14 +96,14 @@ class TestUploadFile:
     def test_upload_docx(self, client, auth_headers, sample_paper):
         resp = client.post(
             f"/api/papers/{sample_paper['id']}/upload",
-            files={"file": ("paper.docx", io.BytesIO(b"fake docx"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+            files={"file": ("paper.docx", io.BytesIO(b"sample docx"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
             headers=auth_headers,
         )
         assert resp.status_code == 200
         assert resp.json()["file_path"].endswith(".docx")
 
     def test_upload_download_roundtrip(self, client, auth_headers, sample_paper):
-        pptx_content = b"fake pptx payload"
+        pptx_content = b"sample pptx payload"
         upload_resp = client.post(
             f"/api/papers/{sample_paper['id']}/upload",
             files={"file": ("slides.pptx", io.BytesIO(pptx_content), "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
@@ -99,8 +116,30 @@ class TestUploadFile:
         assert download_resp.status_code == 200
         assert download_resp.content == pptx_content
 
+    def test_upload_replaces_existing_file_and_deletes_old_file(self, client, auth_headers, sample_paper):
+        first_resp = client.post(
+            f"/api/papers/{sample_paper['id']}/upload",
+            files={"file": ("first.pdf", io.BytesIO(b"first"), "application/pdf")},
+            headers=auth_headers,
+        )
+        assert first_resp.status_code == 200
+        first_path = first_resp.json()["file_path"]
+        from app.papers.router import storage
+
+        assert storage.exists(first_path)
+
+        second_resp = client.post(
+            f"/api/papers/{sample_paper['id']}/upload",
+            files={"file": ("second.pdf", io.BytesIO(b"second"), "application/pdf")},
+            headers=auth_headers,
+        )
+
+        assert second_resp.status_code == 200
+        assert second_resp.json()["file_path"] != first_path
+        assert not storage.exists(first_path)
+
     def test_upload_rejects_large_file(self, client, auth_headers, sample_paper, monkeypatch):
-        monkeypatch.setattr("app.routers.papers.MAX_UPLOAD_SIZE_MB", 1)
+        monkeypatch.setattr("app.papers.router.MAX_UPLOAD_SIZE_MB", 1)
         too_large = io.BytesIO(b"a" * (2 * 1024 * 1024))
         resp = client.post(
             f"/api/papers/{sample_paper['id']}/upload",
@@ -110,7 +149,7 @@ class TestUploadFile:
         assert resp.status_code == 413
 
     def test_upload_rejects_large_file_and_cleans_temp_file(self, client, auth_headers, sample_paper, monkeypatch):
-        monkeypatch.setattr("app.routers.papers.MAX_UPLOAD_SIZE_MB", 1)
+        monkeypatch.setattr("app.papers.router.MAX_UPLOAD_SIZE_MB", 1)
         with tempfile.TemporaryDirectory() as tmpdir:
             original_named_tempfile = tempfile.NamedTemporaryFile
 
@@ -118,7 +157,7 @@ class TestUploadFile:
                 kwargs.setdefault("dir", tmpdir)
                 return original_named_tempfile(*args, **kwargs)
 
-            monkeypatch.setattr("app.routers.papers.tempfile.NamedTemporaryFile", named_tempfile_in_tmpdir)
+            monkeypatch.setattr("app.papers.router.tempfile.NamedTemporaryFile", named_tempfile_in_tmpdir)
             too_large = io.BytesIO(b"a" * (2 * 1024 * 1024))
             resp = client.post(
                 f"/api/papers/{sample_paper['id']}/upload",
