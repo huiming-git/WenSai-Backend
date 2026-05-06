@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi.encoders import jsonable_encoder
 from redis import Redis
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.config import REDIS_URL
@@ -54,6 +54,9 @@ class EventService:
         metadata: dict[str, Any] | None = None,
         commit: bool = True,
     ) -> TaskEventResponse:
+        # Agent runtimes can stream multiple event chunks concurrently. Lock per
+        # task before assigning seq so (task_id, seq) remains gapless and unique.
+        self.db.execute(text("SELECT pg_advisory_xact_lock(:task_id)"), {"task_id": task_id})
         max_seq = self.db.query(func.max(TaskEvent.seq)).filter(TaskEvent.task_id == task_id).scalar() or 0
         event = TaskEvent(
             task_id=task_id,
