@@ -79,6 +79,58 @@ def _decode(raw: str | None):
         return {"raw": raw}
 
 
+def _build_parent_context(db: Session, parent_task_id: int, user_id: int) -> str | None:
+    parent = _get_accessible_task(db, parent_task_id, user_id)
+    parent_result = _decode(parent.result)
+    parent_message = ""
+    if isinstance(parent_result, dict):
+        parent_message = str(parent_result.get("message") or "")
+    elif parent_result is not None:
+        parent_message = str(parent_result)
+
+    parts = [
+        f"# 上一轮沙盒对话 #{parent.id}",
+        "",
+        f"标题：{parent.title or ''}",
+        f"状态：{parent.status}",
+        "",
+        "## 上一轮用户输入",
+        parent.prompt or "",
+    ]
+    if parent_message:
+        parts.extend(["", "## 上一轮 Agent 输出", parent_message])
+    if parent.error:
+        parts.extend(["", "## 上一轮错误", parent.error])
+    return "\n".join(parts).strip()
+
+
+def _enrich_follow_up_input(db: Session, task_input: dict, user_id: int) -> dict:
+    parent_task_id = task_input.get("parent_task_id")
+    if parent_task_id is None:
+        return task_input
+    try:
+        normalized_parent_id = int(parent_task_id)
+    except (TypeError, ValueError):
+        return task_input
+    enriched = dict(task_input)
+    if not enriched.get("conversation_context"):
+        enriched["conversation_context"] = _build_parent_context(db, normalized_parent_id, user_id)
+
+    parent = _get_accessible_task(db, normalized_parent_id, user_id)
+    parent_file_ids = [
+        file_id
+        for (file_id,) in db.query(TaskFile.id).filter(TaskFile.task_id == parent.id).order_by(TaskFile.id.asc()).all()
+        if file_id is not None
+    ]
+    existing_file_ids = enriched.get("workspace_file_ids")
+    if not isinstance(existing_file_ids, list):
+        existing_file_ids = []
+    merged_file_ids = list(dict.fromkeys([*parent_file_ids, *existing_file_ids]))
+    if merged_file_ids:
+        enriched["workspace_file_ids"] = merged_file_ids
+    return enriched
+
+
 def _approval_response(approval: TaskApproval) -> ApprovalResponse:
     return ApprovalResponse(
         id=approval.id,
@@ -187,6 +239,7 @@ async def create_task(
     agent_type = task_in.agent_type or task_in.runtime or "hermes_acp"
     runtime = task_in.runtime or agent_type
     title = task_in.title or task_in.prompt[:80]
+    task_input = _enrich_follow_up_input(db, task_in.input or {}, current_user.id)
     task = Task(
         owner_id=current_user.id,
         workspace_id=workspace_id,
@@ -195,14 +248,14 @@ async def create_task(
         runtime=runtime,
         agent_type=agent_type,
         model=task_in.model or "default",
-        input=encode_json(task_in.input or {}),
+        input=encode_json(task_input),
         status="pending",
     )
     db.add(task)
     db.commit()
     db.refresh(task)
 
-    await _attach_workspace_files_to_task(db, task, current_user, task_in.input)
+    await _attach_workspace_files_to_task(db, task, current_user, task_input)
     await EventService(db).create_event(task.id, "task_created", "任务已创建", {"status": "pending"})
 
     if task_in.dispatch:

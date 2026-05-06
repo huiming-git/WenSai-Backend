@@ -467,6 +467,64 @@ def test_create_task_with_workspace_file_reference(client, auth_headers, monkeyp
     assert transferred[-1] == (new_task_id, "slides/demo.md", "slides/demo.md")
 
 
+def test_follow_up_task_includes_parent_conversation_context(client, auth_headers, monkeypatch):
+    async def stub_dispatch(task_id: int):
+        return None
+
+    transferred: list[tuple[int, str, str | None]] = []
+
+    async def stub_transfer(task_id: int, filename: str, data: bytes, content_type: str | None = None, relative_path: str | None = None, workspace_root_path: str | None = None):
+        transferred.append((task_id, filename, relative_path))
+        return {"path": f"/sandbox/input/{relative_path or filename}"}
+
+    monkeypatch.setattr("app.tasks.router.dispatch_task_to_agentsdk", stub_dispatch)
+    monkeypatch.setattr("app.tasks.router.transfer_file_to_agentsdk", stub_transfer)
+    monkeypatch.setattr("app.files.router.transfer_file_to_agentsdk", stub_transfer)
+
+    parent_resp = client.post(
+        "/api/tasks",
+        json={"title": "Parent", "prompt": "上一轮问题", "dispatch": False},
+        headers=auth_headers,
+    )
+    assert parent_resp.status_code == 201
+    parent_id = parent_resp.json()["id"]
+
+    complete_resp = client.post(
+        f"/api/internal/tasks/{parent_id}/result",
+        json={"message": "上一轮回答"},
+        headers={"X-Internal-Token": INTERNAL_API_TOKEN},
+    )
+    assert complete_resp.status_code == 200
+
+    upload_resp = client.post(
+        f"/api/tasks/{parent_id}/files",
+        data={"relative_path": "slides/demo.pptx"},
+        files={"file": ("demo.pptx", b"ppt", "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
+        headers=auth_headers,
+    )
+    assert upload_resp.status_code == 201
+    parent_file_id = upload_resp.json()["id"]
+
+    follow_resp = client.post(
+        "/api/tasks",
+        json={
+            "title": "Follow",
+            "prompt": "继续处理",
+            "dispatch": False,
+            "input": {"parent_task_id": parent_id},
+        },
+        headers=auth_headers,
+    )
+    assert follow_resp.status_code == 201
+    detail_resp = client.get(f"/api/tasks/{follow_resp.json()['id']}", headers=auth_headers)
+    task_input = detail_resp.json()["input"]
+    assert task_input["parent_task_id"] == parent_id
+    assert "上一轮问题" in task_input["conversation_context"]
+    assert "上一轮回答" in task_input["conversation_context"]
+    assert parent_file_id in task_input["workspace_file_ids"]
+    assert transferred[-1] == (follow_resp.json()["id"], "slides/demo.pptx", "slides/demo.pptx")
+
+
 def test_create_pending_upload_sandbox_file_then_start(client, auth_headers, monkeypatch):
     dispatched: list[int] = []
     transferred: list[tuple[int, str, str | None]] = []
